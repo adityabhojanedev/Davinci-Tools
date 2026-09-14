@@ -4,6 +4,90 @@
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::Manager;
+
+/// Where Resolve looks for user scripts, per OS.
+fn resolve_scripts_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").ok()?;
+        return Some(
+            PathBuf::from(appdata)
+                .join("Blackmagic Design")
+                .join("DaVinci Resolve")
+                .join("Support")
+                .join("Fusion")
+                .join("Scripts")
+                .join("Utility"),
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").ok()?;
+        return Some(
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Blackmagic Design")
+                .join("DaVinci Resolve")
+                .join("Fusion")
+                .join("Scripts")
+                .join("Utility"),
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var("HOME").ok()?;
+        return Some(
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("DaVinciResolve")
+                .join("Fusion")
+                .join("Scripts")
+                .join("Utility"),
+        );
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// Copies the bundled watcher script into Resolve's Scripts folder.
+/// Runs every launch, so updates to the script ship automatically with app updates.
+fn install_bridge_script(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let resource_path = app
+        .path()
+        .resolve(
+            "resolve-bridge/RefreshCaptionsWatcher.lua",
+            tauri::path::BaseDirectory::Resource,
+        )
+        .map_err(|e| format!("Couldn't locate the bundled script: {e}"))?;
+
+    let dest_dir = resolve_scripts_dir()
+        .ok_or_else(|| "Couldn't determine Resolve's Scripts folder for this OS.".to_string())?;
+
+    fs::create_dir_all(&dest_dir)
+        .map_err(|e| format!("Couldn't create {}: {}", dest_dir.display(), e))?;
+
+    let dest_file = dest_dir.join("RefreshCaptionsWatcher.lua");
+    fs::copy(&resource_path, &dest_file)
+        .map_err(|e| format!("Couldn't copy script to {}: {}", dest_file.display(), e))?;
+
+    Ok(dest_file)
+}
+
+#[tauri::command]
+fn bridge_status(app: tauri::AppHandle) -> String {
+    match install_bridge_script(&app) {
+        Ok(path) => format!(
+            "Bridge script installed at:\n{}\n\nIn Resolve: Workspace ▸ Scripts ▸ Utility ▸ RefreshCaptionsWatcher (run it once per session), then click Refresh Captions below.",
+            path.display()
+        ),
+        Err(e) => format!(
+            "Couldn't auto-install the bridge script ({e}). You can copy it manually - see the README."
+        ),
+    }
+}
 
 fn bridge_dir() -> PathBuf {
     let dir = std::env::temp_dir().join("autosubs_refresh_bridge");
@@ -71,7 +155,7 @@ fn refresh_captions() -> Result<String, String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![refresh_captions])
+        .invoke_handler(tauri::generate_handler![refresh_captions, bridge_status])
         .run(tauri::generate_context!())
         .expect("error while running the AutoSubs Refresh app");
 }
