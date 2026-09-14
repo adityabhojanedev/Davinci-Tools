@@ -1,101 +1,120 @@
-# AutoSubs Text+ Refresher
+# AutoSubs Refresh
 
-Fixes the "animation breaks, have to click each caption and press Adjust Word
-Timing twice" problem — for the whole timeline at once, no clicking required.
+A tiny, single-purpose desktop app: one button that fixes broken AutoSubs
+caption animations across your whole DaVinci Resolve timeline. Not a clone
+of AutoSubs — just the one thing you actually needed automated.
 
-## Why this works without the socket/app bridge
+## How it works
 
-AutoSubs' desktop app can't call Resolve's API directly from outside the
-process — that's the Free-version restriction you mentioned. That's why it
-loads a Lua script *inside* Resolve that opens a small local HTTP server, and
-talks to Resolve through that.
+```
+[AutoSubs Refresh app]  --writes-->  trigger.json (temp folder)
+                                           |
+                                           v
+[RefreshCaptionsWatcher.lua running inside Resolve, via Workspace > Scripts]
+     - notices the new trigger
+     - walks every video track / Fusion comp / Text+ on the timeline
+     - refreshes every matching caption node
+     - writes result.json
+                                           |
+                                           v
+[AutoSubs Refresh app]  <--reads--  result.json, shows it to you
+```
 
-A script placed in Resolve's own **Scripts** menu runs inside Resolve the
-same way, so it already has full access to the timeline and Fusion comps —
-no bridge, no external process, works in the Free version.
+No sockets, no ports, no extra Lua libraries to install — just two small
+files exchanged through your system's temp folder. This sidesteps the
+"external apps can't talk to Resolve's API directly in the Free version"
+restriction the same way AutoSubs itself does: the script that does the real
+work runs *inside* Resolve, launched from its own Scripts menu.
 
-## Setup
+## One-time setup
 
-1. Copy `AutoSubsRefresh.lua` into:
+1. Copy `resolve-bridge/RefreshCaptionsWatcher.lua` into:
    - **Windows:** `%APPDATA%\Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Utility\`
    - **macOS:** `~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/`
    - **Linux:** `~/.local/share/DaVinciResolve/Fusion/Scripts/Utility/`
-2. Restart Resolve (or right-click the Scripts menu > "Update").
-3. Run it from **Workspace ▸ Scripts ▸ Utility ▸ AutoSubsRefresh** with your
-   timeline open. Check **Workspace ▸ Console** for output.
+2. Open the `.lua` file and (recommended) paste the exact code your
+   "Adjust Word Timing" button runs into `CUSTOM_REFRESH_CODE` — see
+   "Finding your exact button code" below. You can skip this and try the
+   generic method first.
 
-## Step 1 — find your exact button (do this once)
+## Daily use
 
-Button controls in Fusion don't always respond to a script just toggling
-their value — the real click runs a Lua snippet baked into the macro. To get
-a 100%-faithful fix instead of the generic guess:
+1. Open Resolve, open your project/timeline.
+2. **Workspace ▸ Scripts ▸ Utility ▸ RefreshCaptionsWatcher** — leave it
+   running (check Workspace ▸ Console to confirm it says "Watcher started").
+   Do this once per Resolve session.
+3. Open the AutoSubs Refresh app, click **Refresh Captions**.
+4. The app shows you how many caption nodes were fixed.
 
-1. In the Effects Library, find your AutoSubs caption preset, right-click ▸
-   **Reveal in Explorer/Finder**, and open the `.setting` file in a text
-   editor (VS Code, Notepad++, etc. — it's plain text/Lua).
-2. Search for `Adjust Word Timing`. Nearby you'll find a block like:
-   ```
-   AdjustWordTiming = InstanceInput {
-       ...
-       INPID_InputControl = "ButtonControl",
-       BTNCS_Execute = [[ ...lua code here... ]],
-   }
-   ```
-3. Copy everything between the `[[` and `]]` and paste it into the
-   `CUSTOM_REFRESH_CODE` variable near the top of `AutoSubsRefresh.lua`.
+## Finding your exact button code (recommended, one-time)
 
-If you can't find that block (naming varies by macro version), set
-`DIAGNOSTIC_MODE = true` at the top of the script and run it once — it will
-print every tool name and every input's display name it finds on your
-timeline's Fusion comps, with nothing modified. Use that to correct
-`NAME_HINTS` (currently `"adjust"`, `"word"`, `"timing"`) to whatever your
-button is actually called.
+Fusion's button controls run embedded Lua on click — a script just toggling
+the same value doesn't always trigger it. For a guaranteed match instead of
+the generic guess:
 
-## Step 2 — run it for real
+1. In the Effects Library, right-click your AutoSubs caption preset ▸
+   **Reveal in Explorer/Finder**, and open the `.setting` file as plain text.
+2. Search for `Adjust Word Timing`. Copy the Lua code between the `[[` and
+   `]]` in the nearby `BTNCS_Execute = [[ ... ]]` block.
+3. Paste it into `CUSTOM_REFRESH_CODE` near the top of
+   `RefreshCaptionsWatcher.lua`, save, and re-run the watcher script.
 
-Set `DIAGNOSTIC_MODE = false`, save, and run the script again. It will:
+If the button's display name isn't "Adjust Word Timing" in your version,
+adjust `NAME_HINTS` in the same file (currently `"adjust"`, `"word"`,
+`"timing"` — all three must appear in the name for a match).
 
-- Walk every video track and every clip on the current timeline
-- Open each clip's Fusion composition (no need to actually open the Fusion
-  page in the UI — this works headlessly)
-- Find every tool/control matching your button's name
-- Run your captured code twice per match (or the generic toggle, if you
-  didn't paste custom code)
-- Print a summary of how many nodes it fixed
+## Building the app yourself
 
-Re-run any time animation breaks after adding new captions.
+Requires [Rust](https://rustup.rs) and [Node.js](https://nodejs.org).
 
----
+```bash
+npm install
+npx tauri icon path/to/your-logo.png   # generates src-tauri/icons/* (one-time)
+npm run dev                             # run it locally
+npm run build                           # build an installer for your OS
+```
 
-## About "a similar app I can just install"
+## Publishing installers via GitHub
 
-Full disclosure on scope: AutoSubs itself (Rust + Tauri + local Whisper
-transcription + Lua bridge) represents a genuinely large project. Since it's
-already open-source under the MIT license, the fastest and most maintainable
-path to "an installable app with a Refresh button" is **not** to rebuild it
-from zero, but to extend it:
+Push this folder to a GitHub repo, then tag a release:
 
-1. Fork `tmoroney/auto-subs`.
-2. Add a new handler (e.g. `RefreshAllTextPlus`) to
-   `AutoSubs-App/.../autosubs_core.lua`, using the same tool-walking logic as
-   the script above, exposed over their existing local HTTP server.
-3. Add a matching Rust command in `resolve_bridge.rs` and a "Refresh
-   Captions" button in the React frontend.
-4. Their repo already has GitHub Actions set up for cross-platform builds —
-   push to your fork and you get installers for Windows/macOS/Linux for free.
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
 
-If instead you want a *standalone* lightweight tool of your own (not a fork),
-the same architecture pattern is the right one to copy:
+The included `.github/workflows/build.yml` (using
+[tauri-action](https://github.com/tauri-apps/tauri-action)) builds Windows,
+macOS, and Linux installers automatically and attaches them as a draft
+GitHub Release. Publish the draft when you're happy with it, and future
+updates are just: bump the version, tag, push.
 
-- **Bridge (runs inside Resolve):** a Lua script identical in spirit to
-  `AutoSubsRefresh.lua`, but wrapped in a tiny HTTP server (LuaSocket) so an
-  external app can call it.
-- **App shell:** Tauri (Rust backend + Svelte or React frontend) — small
-  binary size, cross-platform, and Rust's `reqwest` can call the local Lua
-  server the same way AutoSubs does.
-- **CI/CD:** GitHub Actions with `tauri-apps/tauri-action` builds signed
-  installers for all three platforms on every tag push.
+## Project layout
 
-Happy to scaffold that Tauri project (package.json, Cargo.toml, the HTTP
-bridge call, and the GitHub Actions workflow) as a next step if you want to
-go that route — let me know and I'll set it up as a pushable repo structure.
+```
+AutoSubsRefreshApp/
+├── resolve-bridge/
+│   └── RefreshCaptionsWatcher.lua   # runs inside Resolve
+├── src/                              # app frontend (plain HTML/JS, no build step)
+│   ├── index.html
+│   ├── main.js
+│   └── styles.css
+├── src-tauri/                        # Rust backend + packaging config
+│   ├── src/main.rs
+│   ├── Cargo.toml
+│   ├── build.rs
+│   └── tauri.conf.json
+├── .github/workflows/build.yml       # CI: builds installers on tag push
+└── package.json
+```
+
+## Limitations / things to know
+
+- You need to launch `RefreshCaptionsWatcher` from Resolve's Scripts menu
+  once per session — there's no way around this in the Free version, since
+  nothing outside Resolve can reach its API directly.
+- If the generic toggle method doesn't fix the animation, use the
+  "Finding your exact button code" steps above — it's the reliable path.
+- The watcher script currently refreshes the **current** timeline only,
+  matching what you asked for; it's a small change to loop over every
+  timeline in the project if you want that later.
